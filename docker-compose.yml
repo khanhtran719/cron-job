@@ -1,0 +1,16 @@
+name: cron-service
+services:
+  cron-service:
+    image: khanhtrn2608/cron_job:production
+    volumes:
+      - ./logs:/app/logs
+      - ./secret:/app/secret
+    env_file:
+      - .env
+    networks:
+      - icorn-network
+
+networks:
+  icorn-network:
+    driver: bridge
+    name: icorn-network

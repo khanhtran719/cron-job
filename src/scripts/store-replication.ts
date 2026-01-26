@@ -315,7 +315,7 @@ async function rowInsertion(
     const insertQuery = `
       UPDATE ${tableName}
       SET ${upsertList}
-      WHERE id = @id;
+      WHERE rowguid = @rowguid;
 
       -- 2. If no row updated → INSERT
       IF @@ROWCOUNT = 0
@@ -332,7 +332,7 @@ async function rowInsertion(
       'Inserted into',
       tableName,
       'ID:',
-      row['id'],
+      row['rowguid'],
       'Status:',
       isInserted,
     );

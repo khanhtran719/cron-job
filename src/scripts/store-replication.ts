@@ -75,7 +75,7 @@ class ConnectionService {
             requestTimeout: 60000,
           },
           pool: {
-            max: 2,
+            max: 10,
             min: 0,
             idleTimeoutMillis: 30000,
           },
@@ -105,7 +105,7 @@ class ConnectionService {
         requestTimeout: 60000,
       },
       pool: {
-        max: 6,
+        max: 10,
         min: 0,
         idleTimeoutMillis: 30000,
       },
@@ -130,7 +130,7 @@ class ConnectionService {
         requestTimeout: 60000,
       },
       pool: {
-        max: 6,
+        max: 10,
         min: 0,
         idleTimeoutMillis: 30000,
       },
@@ -162,7 +162,7 @@ class ConnectionService {
             requestTimeout: 60000,
           },
           pool: {
-            max: 2,
+            max: 10,
             min: 0,
             idleTimeoutMillis: 30000,
           },
@@ -200,7 +200,7 @@ class ConnectionService {
             requestTimeout: 60000,
           },
           pool: {
-            max: 6,
+            max: 10,
             min: 0,
             idleTimeoutMillis: 30000,
           },
@@ -238,7 +238,7 @@ class ConnectionService {
             requestTimeout: 60000,
           },
           pool: {
-            max: 6,
+            max: 10,
             min: 0,
             idleTimeoutMillis: 30000,
           },

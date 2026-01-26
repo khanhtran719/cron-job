@@ -597,7 +597,7 @@ async function fullTablesReplication(
   );
 
   const service = new ConnectionService();
-  await service.intialize(branchs);
+  await service.intialize(assignedBranches);
 
   const masterCon = await service.getCetralPool();
   if (!masterCon) {
@@ -611,7 +611,7 @@ async function fullTablesReplication(
     columnsCache.set(table, columns);
   }
 
-  for (const branch of branchs) {
+  for (const branch of assignedBranches) {
     for (const date of DATES) {
       try {
         const storeCon = await service.getStorePool(branch);

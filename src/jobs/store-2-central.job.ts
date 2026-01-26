@@ -1,6 +1,8 @@
 import { readFileSync } from 'fs';
 import sql from 'mssql';
 import { join } from 'path';
+import { getInsBranchs } from '../branch';
+import { INSTANCE_ID } from '../constant';
 import { connection } from '../database';
 import { log } from '../log';
 
@@ -16,12 +18,13 @@ interface IColumnsCache {
 export async function HandleAsyncData(dates: string[], tables: string[]) {
   log('Start job store to central');
 
-  const jsonData = readFileSync(
-    join(process.cwd(), 'secret', 'branch.json'),
-    'utf-8',
+  const allBranchs = JSON.parse(
+    readFileSync(join(process.cwd(), 'secret', 'branch.json'), 'utf-8'),
   );
 
-  const branchs = JSON.parse(jsonData);
+  const branchs = allBranchs.filter(
+    (branch: any) => getInsBranchs(branch.code) === INSTANCE_ID,
+  );
 
   const masterCon = await connection.getMasterPool();
   if (!masterCon) {
@@ -37,11 +40,9 @@ export async function HandleAsyncData(dates: string[], tables: string[]) {
 
   for (const branch of branchs) {
     console.log(`Processing branch: ${branch.code}`);
-
     for (const date of dates) {
       try {
         const storeCon = await connection.getStorePool(branch);
-
         if (!storeCon) {
           log(`Connection not established for branch ${branch.code}`);
           continue;
@@ -151,14 +152,16 @@ async function rowInsertion(
     });
 
     const insertQuery = `
-      MERGE ${tableName} AS target
-      USING (SELECT @id AS id) AS source
-        ON target.id = source.id
-      WHEN MATCHED THEN
-        UPDATE SET ${upsertList}
-      WHEN NOT MATCHED THEN
-        INSERT (${columnList})
+      UPDATE ${tableName}
+      SET ${upsertList}
+      WHERE rowguid = @rowguid;
+
+      -- 2. If no row updated → INSERT
+      IF @@ROWCOUNT = 0
+      BEGIN
+        INSERT INTO ${tableName} (${columnList})
         VALUES (${paramList});
+      END
     `;
 
     const inserted = await request.query(insertQuery);

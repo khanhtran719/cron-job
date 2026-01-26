@@ -1,15 +1,14 @@
-import { readFileSync } from 'fs';
-import { join } from 'path';
+import { allBranchs, getInsBranchs } from './branch';
+import { INSTANCE_ID, TOTAL_INSTANCES } from './constant';
 import { registerCronJobs } from './cron';
 import { connection } from './database';
 
-async function bootstrap() {
-  const jsonData = readFileSync(
-    join(process.cwd(), 'secret', 'branch.json'),
-    'utf-8',
-  );
+console.log(`[INSTANCE ${INSTANCE_ID}/${TOTAL_INSTANCES}] started`);
 
-  const branchs = JSON.parse(jsonData);
+async function bootstrap() {
+  const branchs = allBranchs.filter(
+    (branch: any) => getInsBranchs(branch.code) === INSTANCE_ID,
+  );
 
   await connection.intialize(branchs);
 

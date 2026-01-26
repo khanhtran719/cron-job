@@ -2,17 +2,56 @@ import cron from 'node-cron';
 import { HandleAsyncData } from './jobs';
 
 export function registerCronJobs() {
-  // Get current date in 'YYYY-MM-DD' format less than 1 day
-  const yesterday = new Date(new Date().setDate(new Date().getDate() - 1))
-    .toISOString()
-    .split('T')[0];
+  cron.schedule(
+    '0 */3 * * *', // Cấu hình thời gian chạy hằng ngày ở đây
+    async () => {
+      let date = new Date().toISOString().split('T')[0];
+      if (new Date().getHours() + 7 >= 10) {
+        date = new Date(new Date().setDate(new Date().getDate() - 1))
+          .toISOString()
+          .split('T')[0];
+      }
 
-  console.log('yesterday', yesterday);
+      await HandleAsyncData(
+        [date],
+        [
+          'HoaDon_Coupon',
+          'HoaDon_Customer',
+          'HoaDon_GiamGia',
+          'HoaDon_Gift',
+          'HoaDon_Info',
+          'HoaDon_KhachHang',
+          'HoaDon_MIFI',
+          'HoaDon_PhuPhi',
+          'HoaDon_VAT',
+        ],
+      );
+    },
+    {
+      timezone: 'Asia/Ho_Chi_Minh',
+    },
+  );
 
   cron.schedule(
-    '0 4 * * *', // Cấu hình thời gian chạy hằng ngày ở đây
-    async () => await HandleAsyncData([yesterday]),
+    '0 7 * * *', // Cấu hình thời gian chạy hằng ngày ở đây
+    async () => {
+      const yesterday = new Date(new Date().setDate(new Date().getDate() - 1))
+        .toISOString()
+        .split('T')[0];
 
+      await HandleAsyncData(
+        [yesterday],
+        [
+          'HoaDon_ChiTietHangHoa',
+          'HoaDon_Combo_HangHoa',
+          'HoaDon_DiscountOnSales',
+          'HoaDon_DoanhThu_NhanVien',
+          'HoaDon_NVL',
+          'HoaDon_Sub',
+          'HoaDon_TraMon',
+        ],
+      );
+    },
     {
       timezone: 'Asia/Ho_Chi_Minh',
     },

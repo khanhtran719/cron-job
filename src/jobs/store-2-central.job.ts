@@ -15,7 +15,11 @@ interface IColumnsCache {
   upsertList: string;
 }
 
-export async function HandleAsyncData(dates: string[], tables: string[]) {
+export async function HandleAsyncData(
+  dates: string[],
+  tables: string[],
+  revenueTables: string[],
+) {
   log('Start job store to central');
 
   const allBranchs = JSON.parse(
@@ -33,7 +37,14 @@ export async function HandleAsyncData(dates: string[], tables: string[]) {
   }
 
   const columnsCache = new Map<string, IColumnsCache>();
-  for (const table of [...tables, 'Ca', 'ChiTieu', 'HoaDon', 'KhachHang']) {
+  for (const table of [
+    ...tables,
+    ...revenueTables,
+    'Ca',
+    'HoaDon',
+    'KhachHang',
+    'ChiPhi',
+  ]) {
     const columns = await getInsertableColumns(masterCon!, table);
     columnsCache.set(table, columns);
   }
@@ -56,18 +67,17 @@ export async function HandleAsyncData(dates: string[], tables: string[]) {
             branch.code,
             date,
           ),
-          feeReplication(
-            storeCon,
-            masterCon,
-            columnsCache.get('ChiTieu')!,
-            branch.code,
-            date,
-          ),
           customerReplication(
             storeCon,
             masterCon,
             columnsCache.get('KhachHang')!,
             branch.code,
+            date,
+          ),
+          chiphiReplication(
+            storeCon,
+            masterCon,
+            columnsCache.get('ChiPhi')!,
             date,
           ),
         ]);
@@ -88,6 +98,18 @@ export async function HandleAsyncData(dates: string[], tables: string[]) {
             columnsCache.get(table)!,
             invoiceIds,
             table,
+            branch.code,
+          );
+        }
+
+        for (const table of revenueTables) {
+          await revenueTablesReplication(
+            storeCon,
+            masterCon,
+            columnsCache.get(table)!,
+            date,
+            table,
+            branch.code,
           );
         }
       } catch (error) {
@@ -143,7 +165,22 @@ async function rowInsertion(
   upsertList: string,
   columns: string[],
   row: any,
+  cuahang_id?: string,
 ) {
+  const talbeWithId: string[] = [
+    'HoaDon_Sub',
+    'HoaDon_Gift',
+    'HoaDon_MIFI',
+    'HoaDon_KhachHang',
+  ];
+
+  let pkColumn = 'id';
+  if (!talbeWithId.includes(tableName)) {
+    if (columns.includes('rowguid')) {
+      pkColumn = 'rowguid';
+    }
+  }
+
   try {
     const request = masterConnection.request();
 
@@ -154,7 +191,7 @@ async function rowInsertion(
     const insertQuery = `
       UPDATE ${tableName}
       SET ${upsertList}
-      WHERE rowguid = @rowguid;
+      WHERE ${pkColumn} = @${pkColumn};
 
       -- 2. If no row updated → INSERT
       IF @@ROWCOUNT = 0
@@ -170,15 +207,22 @@ async function rowInsertion(
     console.log(
       'Inserted into',
       tableName,
-      'ID:',
-      row['id'],
+      pkColumn + ':',
+      row[pkColumn],
       'Status:',
       isInserted,
     );
 
     return inserted;
   } catch (err) {
-    log(`Error inserting row into ${tableName} with ID ${row['id']}`);
+    log(
+      `[${
+        cuahang_id ?? null
+      }] Error inserting row into ${tableName} with ${pkColumn} ${
+        row[pkColumn]
+      }` + `: ${err}`,
+    );
+
     return null;
   }
 }
@@ -218,6 +262,7 @@ async function shiftReplication(
         upsertList,
         columns,
         row,
+        storeCode,
       );
     }
 
@@ -225,6 +270,98 @@ async function shiftReplication(
   } catch (err) {
     log('Error during shift replication: ' + storeCode + ' - ' + date);
     return [];
+  }
+}
+
+async function chiphiReplication(
+  storeConnection: sql.ConnectionPool,
+  masterConnection: sql.ConnectionPool,
+  columnsCache: IColumnsCache,
+  date: string,
+) {
+  const { columns, columnList, paramList, upsertList } = columnsCache;
+
+  const month = new Date(date).getMonth() + 1;
+  const year = new Date(date).getFullYear();
+
+  try {
+    const data = await storeConnection.request().query(`
+      SELECT *
+      FROM ChiPhi
+      WHERE month = ${month} AND year = ${year}
+    `);
+
+    console.log('--------------------CUSTOMER------------------------');
+    console.log(
+      `ChiPhi for month ${month} and year ${year}:`,
+      data.recordset.length,
+    );
+
+    if (data.recordset.length === 0) return;
+
+    for (const row of data.recordset) {
+      await rowInsertion(
+        masterConnection,
+        'ChiPhi',
+        columnList,
+        paramList,
+        upsertList,
+        columns,
+        row,
+      );
+    }
+  } catch (error) {
+    log('Error during chiphi replication: ' + date);
+  }
+}
+
+async function revenueTablesReplication(
+  storeConnection: sql.ConnectionPool,
+  masterConnection: sql.ConnectionPool,
+  columnsCache: IColumnsCache,
+  date: string,
+  tableName: string,
+  storeCode: string,
+) {
+  const { columns, columnList, paramList, upsertList } = columnsCache;
+
+  try {
+    const data = await storeConnection.request().query(`
+      SELECT *
+      FROM ${tableName} 
+      WHERE cuahang_id = '${storeCode}' and date = '${date}'
+    `);
+
+    console.log(
+      '--------------------' + tableName + '------------------------',
+    );
+    console.log(
+      `Records for table ${tableName} and date [${date}]:`,
+      data.recordset.length,
+    );
+    if (data.recordset.length === 0) return;
+
+    for (const row of data.recordset) {
+      await rowInsertion(
+        masterConnection,
+        tableName,
+        columnList,
+        paramList,
+        upsertList,
+        columns,
+        row,
+        storeCode,
+      );
+    }
+  } catch (error) {
+    log(
+      'Error during revenue table replication: ' +
+        tableName +
+        ' - ' +
+        storeCode +
+        ' - ' +
+        date,
+    );
   }
 }
 
@@ -259,6 +396,7 @@ async function feeReplication(
         upsertList,
         columns,
         row,
+        storeCode,
       );
     }
   } catch (error) {
@@ -271,6 +409,7 @@ async function invoiceReplication(
   masterConnection: sql.ConnectionPool,
   columnsCache: IColumnsCache,
   shiftIds: string[],
+  storeCode?: string,
 ) {
   const { columns, columnList, paramList, upsertList } = columnsCache;
 
@@ -301,6 +440,7 @@ async function invoiceReplication(
         upsertList,
         columns,
         row,
+        storeCode,
       );
     }
 
@@ -342,6 +482,7 @@ async function customerReplication(
         upsertList,
         columns,
         row,
+        storeCode,
       );
     }
   } catch (error) {
@@ -355,6 +496,7 @@ async function fullTablesReplication(
   columnsCache: IColumnsCache,
   invoiceIds: string[],
   tableName: string,
+  storeCode: string,
 ) {
   const { columns, columnList, paramList, upsertList } = columnsCache;
 
@@ -386,6 +528,7 @@ async function fullTablesReplication(
         upsertList,
         columns,
         row,
+        storeCode,
       );
     }
   } catch (error) {

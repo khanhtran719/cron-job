@@ -21,6 +21,7 @@ export function registerCronJobs() {
           'HoaDon_Customer',
           'HoaDon_DiscountOnSales',
           'HoaDon_DoanhThu_NhanVien',
+          'HoaDon_HinhThucThanhToan',
           'HoaDon_GiamGia',
           'HoaDon_Gift',
           'HoaDon_Info',
@@ -32,6 +33,7 @@ export function registerCronJobs() {
           'HoaDon_TraMon',
           'HoaDon_VAT',
         ],
+        ['ChiTieu', 'DoanhThu', 'DoanhThu_NhanVien'],
       );
     },
     {

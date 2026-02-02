@@ -13,6 +13,7 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "@sonar/scan": "^4.3.4",
     "dotenv": "^17.2.3",
     "mssql": "^11.0.1",
     "node-cron": "^4.2.1",

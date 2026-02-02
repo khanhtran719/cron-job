@@ -1,0 +1,7 @@
+organization=khanhtran719
+projectKey=khanhtran719_cron-job
+serverUrl=https://sonarcloud.io
+serverVersion=8.0.0.79067
+dashboardUrl=https://sonarcloud.io/dashboard?id=khanhtran719_cron-job
+ceTaskId=AZwHrYEOgiX5qccRa_pE
+ceTaskUrl=https://sonarcloud.io/api/ce/task?id=AZwHrYEOgiX5qccRa_pE

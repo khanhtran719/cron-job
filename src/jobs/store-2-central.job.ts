@@ -1,10 +1,17 @@
-import { randomUUID } from 'node:crypto';
 import sql from 'mssql';
+import { randomUUID } from 'node:crypto';
 import { assignedBranchs } from '../branch';
 import { connection } from '../database';
 
 const NON_UPDATABLE_COLUMNS = ['id', 'rowguid'];
-const TABLES_WITH_ID = ['HoaDon_Sub', 'HoaDon_Gift', 'HoaDon_MIFI', 'HoaDon_KhachHang', 'Phong'];
+// Parent IDs must stay aligned with HoaDon.ca_id and detail bill_id/source_id.
+const TABLES_WITH_ID = ['Ca', 'HoaDon', 'HoaDon_Sub', 'HoaDon_Gift', 'HoaDon_MIFI', 'HoaDon_KhachHang', 'Phong'];
+
+interface IReplicationSummary {
+  read: number;
+  written: number;
+  failed: number;
+}
 
 interface IColumnsCache {
   columns: string[];
@@ -24,7 +31,7 @@ export async function HandleAsyncData(dates: string[], tables: string[], revenue
   }
 
   const columnsCache = new Map<string, IColumnsCache>();
-  for (const table of new Set(tables)) {
+  for (const table of new Set(['Ca', 'HoaDon', ...tables])) {
     const columns = await getInsertableColumns(masterCon!, table);
     columnsCache.set(table, columns);
   }
@@ -41,17 +48,24 @@ export async function HandleAsyncData(dates: string[], tables: string[], revenue
         // await phongReplication(storeCon, masterCon, columnsCache.get('Phong')!, branch.code);
 
         const [shiftIds] = await Promise.all([
-          shiftReplication(storeCon, branch.code, date),
+          shiftReplication(storeCon, masterCon, columnsCache.get('Ca')!, branch.code, date, summary),
           // customerReplication(storeCon, masterCon, columnsCache.get('KhachHang')!, branch.code, date),
           // chiphiReplication(storeCon, masterCon, columnsCache.get('ChiPhi')!, date),
         ]);
         if (!shiftIds?.length) continue;
 
-        const invoiceIds = await invoiceReplication(storeCon, shiftIds);
+        const invoiceIds = await invoiceReplication(storeCon, masterCon, columnsCache.get('HoaDon')!, shiftIds, branch.code, summary);
         if (!invoiceIds || !invoiceIds.length) continue;
 
         for (const table of tables) {
-          const result = await fullTablesReplication(storeCon, masterCon, columnsCache.get(table)!, invoiceIds, table, branch.code);
+          const result = await fullTablesReplication(
+            storeCon,
+            masterCon,
+            columnsCache.get(table)!,
+            invoiceIds,
+            table,
+            branch.code,
+          );
           summary.read += result.read;
           summary.written += result.written;
           summary.failed += result.failed;
@@ -68,7 +82,8 @@ export async function HandleAsyncData(dates: string[], tables: string[], revenue
     }
   }
   console.log('[JOB] Result:', summary);
-  if (summary.failed) throw new Error(`Job failed: ${summary.failed} error(s), ${summary.written}/${summary.read} rows written`);
+  if (summary.failed)
+    throw new Error(`Job failed: ${summary.failed} error(s), ${summary.written}/${summary.read} rows written`);
   return summary;
 }
 
@@ -167,9 +182,13 @@ async function rowInsertion(
 
 async function shiftReplication(
   storeConnection: sql.ConnectionPool,
+  masterConnection: sql.ConnectionPool,
+  columnsCache: IColumnsCache,
   storeCode: string,
   date: string,
+  summary: IReplicationSummary,
 ) {
+  const { columns, columnList, paramList, upsertList } = columnsCache;
   try {
     const data = await storeConnection.request().query(`
       SELECT *
@@ -183,10 +202,15 @@ async function shiftReplication(
     if (data.recordset.length === 0) return [];
 
     const shiftIds: string[] = [];
+    summary.read += data.recordset.length;
     for (const row of data.recordset) {
-      shiftIds.push(row.id);
-
-      // Parent Ca writes remain disabled in this repair flow.
+      const inserted = await rowInsertion(masterConnection, 'Ca', columnList, paramList, upsertList, columns, row, storeCode);
+      if (inserted) {
+        shiftIds.push(row.id);
+        summary.written++;
+      } else {
+        summary.failed++;
+      }
     }
 
     return shiftIds;
@@ -313,8 +337,13 @@ async function feeReplication(
 
 async function invoiceReplication(
   storeConnection: sql.ConnectionPool,
+  masterConnection: sql.ConnectionPool,
+  columnsCache: IColumnsCache,
   shiftIds: string[],
+  storeCode: string,
+  summary: IReplicationSummary,
 ) {
+  const { columns, columnList, paramList, upsertList } = columnsCache;
   try {
     const data = await storeConnection.request().query(`
       SELECT *
@@ -328,10 +357,15 @@ async function invoiceReplication(
     if (data.recordset.length === 0) return [];
 
     const ids: string[] = [];
+    summary.read += data.recordset.length;
     for (const row of data.recordset) {
-      ids.push(row.id);
-
-      // Parent HoaDon writes remain disabled in this repair flow.
+      const inserted = await rowInsertion(masterConnection, 'HoaDon', columnList, paramList, upsertList, columns, row, storeCode);
+      if (inserted) {
+        ids.push(row.id);
+        summary.written++;
+      } else {
+        summary.failed++;
+      }
     }
 
     return ids;
@@ -398,7 +432,16 @@ async function fullTablesReplication(
       if (!row['rowguid'] && (TABLES_WITH_ID.includes(tableName) || !columns.includes('rowguid'))) {
         row['rowguid'] = randomUUID();
       }
-      const inserted = await rowInsertion(masterConnection, tableName, columnList, paramList, upsertList, columns, row, storeCode);
+      const inserted = await rowInsertion(
+        masterConnection,
+        tableName,
+        columnList,
+        paramList,
+        upsertList,
+        columns,
+        row,
+        storeCode,
+      );
       if (inserted) summary.written++;
       else summary.failed++;
     }

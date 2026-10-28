@@ -23,14 +23,14 @@ Tài liệu mô tả **hành vi đang có trong source**, gồm cả những ph�
 
 | Nhu cầu | Cách chạy | Phạm vi mặc định |
 | --- | --- | --- |
-| Repair một lượt rồi kết thúc | `npm run start:once` | Store → **MASTER**, bảng `HoaDon_Sub`, các ngày 26–28/07/2026. |
-| Chạy theo lịch | `npm run start:cron` | Store → **MASTER**, các bảng chi tiết trong `src/cron.ts`, mỗi 3 giờ. |
+| Đồng bộ một lượt rồi kết thúc | `npm run start:once` | Store → **MASTER**; `Ca` → `HoaDon` → các bảng chi tiết trong `src/index.ts`. Cấu hình hiện tại: ngày 26/07/2026, 17 bảng chi tiết. |
+| Chạy theo lịch | `npm run start:cron` | Store → **MASTER**; `Ca` → `HoaDon` → các bảng chi tiết trong `src/cron.ts`, mỗi 3 giờ. |
 | Chọn chế độ qua cấu hình | `npm start` | Đọc `JOB_MODE` trong môi trường/`.env`; mặc định `once`. |
 | Chạy trong container | Docker Compose | Cùng entry chính; chọn `JOB_MODE` và một worker. |
 | Chia chi nhánh trên nhiều process | PM2 | Ecosystem hiện chạy cron với bốn worker. |
 | Đồng bộ khách hàng cũ hoặc repair riêng | Các lệnh `start:store`, `start:central`, `start:complain` | Xem mục 7; không được cron tự gọi. |
 
-**Lưu ý về dữ liệu:** job chính đang dùng như một luồng repair bảng con. `Ca` và `HoaDon` được đọc từ nguồn để lấy ID, nhưng **không được ghi vào đích**. Các bước khách hàng, chi phí, doanh thu và phòng vẫn tắt. Dữ liệu cha cần có sẵn ở đích nếu bảng con có ràng buộc liên quan.
+**Lưu ý về dữ liệu:** job chính ghi lần lượt `Ca` → `HoaDon` → chi tiết, dùng `id` nguồn để liên kết cha–con. Mỗi bước update bản ghi đã có hoặc insert nếu chưa có. Chỉ ca ghi thành công mới được dùng để lấy hóa đơn; chỉ hóa đơn ghi thành công mới được dùng để lấy chi tiết. Dòng cha lỗi không chặn các nhánh thành công khác, nhưng cả lượt vẫn báo thất bại. Các bước khách hàng, chi phí, doanh thu và phòng vẫn tắt; đây chưa phải bản sao toàn bộ dữ liệu nghiệp vụ.
 
 Tên file `store-2-central.job.ts` và thông báo `Start job store to central` là tên cũ: job này thực tế gọi `getMasterPool()` và ghi vào kết nối `MASTER_DB_*`. Không chọn database dựa vào tên file hoặc câu log.
 
@@ -337,11 +337,11 @@ Sửa trực tiếp `dist/*.js` chỉ có tác dụng tạm thời: lần build 
 
 ### 6.2. Đổi ngày và bảng của once
 
-Mặc định trong `src/index.ts`:
+Cấu hình hiện tại trong `src/index.ts` dùng một ngày `2026-07-26` và 17 bảng chi tiết. Ví dụ rút gọn dưới đây chỉ đồng bộ `HoaDon_Sub` cùng ca/hóa đơn cha tương ứng (muốn áp dụng thì thay lời gọi hiện tại):
 
 ```ts
 await HandleAsyncData(
-  ['2026-07-26', '2026-07-27', '2026-07-28'],
+  ['2026-07-26'],
   ['HoaDon_Sub'],
   [],
 );
@@ -415,7 +415,7 @@ HandleAsyncData(dates, tables, revenueTables)
 | Tham số | Trạng thái hiện tại |
 | --- | --- |
 | `dates` | Các ngày dùng để tìm `Ca` của cửa hàng. |
-| `tables` | Các bảng chi tiết thực sự được đọc và ghi; chỉ các bảng này được cache metadata đích. |
+| `tables` | Các bảng chi tiết thực sự được đọc và ghi; job luôn cache thêm metadata `Ca`, `HoaDon` để ghi cha trước chi tiết. Không thêm hai bảng cha này vào danh sách bảng chi tiết. |
 | `revenueTables` | Vẫn có trong chữ ký hàm nhưng vòng xử lý đang comment; truyền tên bảng vào đây **chưa làm bảng đó được đồng bộ**. |
 
 Cron đang truyền 17 bảng chi tiết, gồm `HoaDon_ChiTietHangHoa`, `HoaDon_Combo_HangHoa`, `HoaDon_Coupon`, `HoaDon_Customer`, `HoaDon_DiscountOnSales`, `HoaDon_DoanhThu_NhanVien`, `HoaDon_HinhThucThanhToan`, `HoaDon_GiamGia`, `HoaDon_Gift`, `HoaDon_Info`, `HoaDon_KhachHang`, `HoaDon_MIFI`, `HoaDon_NVL`, `HoaDon_PhuPhi`, `HoaDon_Sub`, `HoaDon_TraMon`, `HoaDon_VAT`.
@@ -502,7 +502,7 @@ Processing branch: 01
 
 | Trường/trạng thái | Cách hiểu |
 | --- | --- |
-| `read` | Số dòng chi tiết đã đọc và cộng vào kết quả; không gồm tổng số ca/hóa đơn được đọc để tìm ID. |
+| `read` | Tổng số dòng ca, hóa đơn và chi tiết đã đọc để ghi. Dữ liệu con thuộc cha ghi lỗi không được đọc, nên không được tính vào số này. |
 | `written` | Số lượt ghi dòng trả kết quả mà không lỗi; có thể là update hoặc insert, không phải số bản ghi mới. |
 | `failed` | Số lỗi ghi từng dòng cộng với lỗi ở phạm vi chi nhánh/ngày; không luôn bằng số dòng thiếu ở đích. |
 | `[CRON] Jobs registered` | Lịch đã đăng ký, chưa chứng minh job đã chạy hoặc ghi thành công. |
@@ -594,14 +594,14 @@ Ba script trong `src/scripts/` chạy độc lập với sơ đồ bootstrap nà
 `HandleAsyncData` thực hiện theo thứ tự:
 
 1. Dùng `assignedBranchs` của worker hiện tại; nếu không có branch thì trả kết quả rỗng.
-2. Lấy pool Master và metadata cho các bảng thực sự nằm trong tham số `tables`.
+2. Lấy pool Master và metadata cho `Ca`, `HoaDon` cùng các bảng chi tiết trong tham số `tables`; không yêu cầu metadata của các nhánh đang tắt.
 3. Với mỗi cửa hàng, lần lượt duyệt từng ngày.
-4. Đọc `Ca` từ Store theo `date` và `cuahang_id`, thu các `id`.
-5. Đọc `HoaDon` có `ca_id` thuộc các ca trên, thu các `id` hóa đơn. Job chính không thêm bộ lọc trạng thái hóa đơn.
-6. Đọc từng bảng chi tiết: `HoaDon_Sub.source_id` thuộc ID hóa đơn; bảng còn lại dùng `bill_id`.
+4. Đọc `Ca` từ Store theo `date` và `cuahang_id`, upsert từng ca sang Master theo `id`, chỉ giữ ID các ca ghi thành công.
+5. Đọc `HoaDon` có `ca_id` thuộc các ca ghi thành công, upsert sang Master theo `id`, chỉ giữ ID hóa đơn ghi thành công. Job chính không thêm bộ lọc trạng thái hóa đơn.
+6. Đọc từng bảng chi tiết: `HoaDon_Sub.source_id` thuộc ID hóa đơn ghi thành công; bảng còn lại dùng `bill_id`.
 7. Ghi từng dòng sang Master, tổng hợp kết quả rồi trả thành công hoặc throw lỗi tổng hợp.
 
-Luồng hiện tại tuần tự qua branch/ngày/bảng/dòng. Dù có chỗ dùng `Promise.all`, danh sách đang hoạt động ở đó chỉ có bước đọc ca. Dependency `p-limit` có trong package nhưng job không dùng để giới hạn song song.
+Luồng hiện tại tuần tự qua branch/ngày/bảng/dòng. Dù có chỗ dùng `Promise.all`, danh sách đang hoạt động ở đó chỉ có bước đồng bộ ca. Dependency `p-limit` có trong package nhưng job không dùng để giới hạn song song.
 
 ### 9.4. Metadata và quy tắc ghi
 
@@ -617,7 +617,7 @@ Quy tắc khóa của job chính:
 | Bảng khác và metadata có `rowguid` | `rowguid`. |
 | Bảng khác, không có `rowguid` | `id`. |
 
-`TABLES_WITH_ID` hiện gồm `HoaDon_Sub`, `HoaDon_Gift`, `HoaDon_MIFI`, `HoaDon_KhachHang`, `Phong`. Tên cột/bảng trong các kiểm tra này được so bằng chuỗi trong JavaScript; không mặc định mọi biến thể chữ hoa/thường đều được nhận diện như nhau.
+`TABLES_WITH_ID` hiện gồm `Ca`, `HoaDon`, `HoaDon_Sub`, `HoaDon_Gift`, `HoaDon_MIFI`, `HoaDon_KhachHang`, `Phong`. Hai bảng cha dùng `id` để giữ nguyên liên kết `HoaDon.ca_id` và `bill_id`/`source_id` của chi tiết. Tên cột/bảng trong các kiểm tra này được so bằng chuỗi trong JavaScript; không mặc định mọi biến thể chữ hoa/thường đều được nhận diện như nhau.
 
 - `id`, `rowguid` bị loại khỏi danh sách cột update trong `NON_UPDATABLE_COLUMNS`.
 - Job dùng `UPDATE ... WHERE khóa = @khóa`, rồi `INSERT` nếu không có dòng được update.
@@ -658,14 +658,15 @@ Khi đổi số worker, phép chia thay đổi: dừng toàn bộ cấu hình c�
 
 Giữ danh sách tên bảng/cột được kiểm soát trong source. Tên identifier hiện được nội suy vào SQL; không mở trực tiếp tham số bảng cho input không tin cậy mà chưa có whitelist. Khi thêm giá trị lọc mới, ưu tiên bind qua request thay vì nối chuỗi SQL.
 
-### 10.2. Bật lại ca, hóa đơn cha, doanh thu hoặc các nhánh đang tắt
+### 10.2. Custom đồng bộ cha hoặc bật doanh thu và các nhánh đang tắt
 
-Đây là thay đổi hành vi, không chỉ thay cấu hình. Hiện job chỉ cache metadata cho `tables`; các helper đang tắt chưa được đưa vào cơ chế tổng hợp lỗi của luồng hoạt động.
+`Ca` và `HoaDon` đã được bật cho cả once/cron, luôn ghi trước bảng chi tiết. Khi custom, giữ nguyên việc chỉ chuyển ID cha ghi thành công cho bước con và cộng lỗi cha vào summary. Nếu schema cha dùng identity thay vì ID có thể giữ nguyên từ nguồn, cần thiết kế ánh xạ ID trước khi dùng; hiện job chưa có ánh xạ này.
+
+Bật thêm doanh thu/khách hàng/chi phí/phòng là thay đổi hành vi, không chỉ thay cấu hình. Các helper đang tắt chưa được đưa vào cơ chế tổng hợp lỗi của luồng hoạt động.
 
 Khi bật một nhánh:
 
 - Bổ sung metadata của bảng đó trước khi gọi helper; không chỉ bỏ comment rồi dùng `columnsCache.get(...)!`.
-- Với ca/hóa đơn cha, bổ sung lại việc truyền pool đích và metadata vào helper nếu cần. Chữ ký helper hiện chỉ phục vụ đọc ID; lệnh ghi cha không có sẵn để chỉ bỏ comment.
 - Giữ thứ tự phụ thuộc dữ liệu: dữ liệu cha ghi thành công trước khi cho phép ghi bảng con tương ứng.
 - Đưa lỗi đọc/ghi vào kết quả tổng hợp; một số helper chưa bật hiện chỉ log lỗi hoặc bỏ qua kết quả `null`.
 - Với doanh thu, xử lý theo cửa hàng/ngày bằng query phù hợp; không dùng bộ lọc `bill_id` của bảng chi tiết.
@@ -766,7 +767,7 @@ Dùng database thử nghiệm để xác minh:
 4. Một dòng lỗi constraint: kết quả báo thất bại và xác định rõ phần đã ghi.
 5. Trường hợp không có ca/hóa đơn/chi tiết: phân biệt dữ liệu rỗng hợp lệ với filter sai.
 6. Các ranh giới ngày trước/sau 10:00, đầu tháng, đầu năm khi sửa cron.
-7. Nếu bật parent/child mới: đối soát quan hệ dữ liệu và kiểm tra đường lỗi giữa các bước.
+7. Đối soát quan hệ ca → hóa đơn → chi tiết, kiểm tra parent lỗi không cho con tiếp tục; làm tương tự nếu thêm quan hệ mới.
 
 ### 11.3. Bộ bàn giao
 
@@ -785,7 +786,7 @@ Ghi rõ mode, hướng dữ liệu, phạm vi ngày/bảng, cách cấp cấu h�
 ## 12. Giới hạn hiện tại
 
 - Chưa kiểm chứng end-to-end với SQL Server thật trong đợt sửa này.
-- Job chính chưa đồng bộ đầy đủ parent/customer/expense/revenue/room; danh sách bảng không phải bản sao toàn bộ DB.
+- Job chính đã đồng bộ ca/hóa đơn cha và các bảng chi tiết được yêu cầu; chưa bật customer/expense/revenue/room, nên không phải bản sao toàn bộ DB.
 - Chưa có dry-run, tự retry ghi, checkpoint, replay lịch bỏ lỡ, đồng bộ xóa hoặc rollback toàn bộ lượt chạy.
 - Upsert chưa có khóa phân tán/transaction chống tranh chấp giữa các bản triển khai độc lập. Một lượt lỗi có thể đã ghi một phần dữ liệu.
 - Các tên bảng/cột, khóa và schema vẫn có giả định trong code; không phải công cụ replication tổng quát cho mọi schema SQL Server.

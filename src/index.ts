@@ -13,7 +13,29 @@ async function bootstrap() {
   try {
     await connection.intialize(assignedBranchs);
     if (mode === 'once') {
-      await HandleAsyncData(['2026-07-26', '2026-07-27', '2026-07-28'], ['HoaDon_Sub'], []);
+      await HandleAsyncData(
+        ['2026-07-26'],
+        [
+          'HoaDon_ChiTietHangHoa',
+          'HoaDon_Combo_HangHoa',
+          'HoaDon_Coupon',
+          'HoaDon_Customer',
+          'HoaDon_DiscountOnSales',
+          'HoaDon_DoanhThu_NhanVien',
+          'HoaDon_HinhThucThanhToan',
+          'HoaDon_GiamGia',
+          'HoaDon_Gift',
+          'HoaDon_Info',
+          'HoaDon_KhachHang',
+          'HoaDon_MIFI',
+          'HoaDon_NVL',
+          'HoaDon_PhuPhi',
+          'HoaDon_Sub',
+          'HoaDon_TraMon',
+          'HoaDon_VAT',
+        ],
+        ['ChiTieu', 'DoanhThu', 'DoanhThu_NhanVien'],
+      );
       return;
     }
     const cron = registerCronJobs();

@@ -68,7 +68,7 @@ test('stopping cron prevents an already queued callback from starting a new job'
   assert.equal(runs, 0);
 });
 
-test('once runs the existing repair and closes pools; cron only registers the schedule', async () => {
+test('once runs one configured job and closes pools; cron only registers the schedule', async () => {
   for (const mode of ['once', 'cron']) {
     const events = [];
     const proc = { env: {}, argv: ['node', 'index.js', mode], cwd: () => '/isolated', on() {}, once() {}, exitCode: 0 };
@@ -82,10 +82,16 @@ test('once runs the existing repair and closes pools; cron only registers the sc
     }, { process: proc });
     await new Promise(resolve => setImmediate(resolve));
     if (mode === 'once') {
-      assert.equal(events[1][0].join(','), '2026-07-26,2026-07-27,2026-07-28');
-      assert.equal(events[1][1].join(','), 'HoaDon_Sub');
-      assert.equal(events.at(-1), 'close');
-      assert(!events.includes('schedule'));
+      assert.equal(events.length, 3);
+      assert.equal(events[0], 'init');
+      assert.equal(events[2], 'close');
+      const args = events[1];
+      assert.equal(args.length, 3);
+      assert(Array.isArray(args[0]) && args[0].length > 0);
+      assert(args[0].every(date => typeof date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(date)));
+      assert(Array.isArray(args[1]) && args[1].length > 0);
+      assert(args[1].every(table => typeof table === 'string' && table.length > 0));
+      assert(Array.isArray(args[2]));
     } else {
       assert.deepEqual(events, ['init', 'schedule']);
     }

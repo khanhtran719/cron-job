@@ -6,13 +6,7 @@ import { join } from 'path';
 dotenv.config();
 
 // SETTING DATE TO REPLICATE
-const DATES: string[] = [
-  '2026-01-19',
-  '2026-01-20',
-  '2026-01-21',
-  '2026-01-22',
-  '2026-01-23',
-];
+const DATES: string[] = ['2026-07-20', '2026-07-21'];
 
 interface IColumnsCache {
   columns: string[];
@@ -61,6 +55,7 @@ class ConnectionService {
           pool: branchPool,
         });
       } catch (err) {
+        process.exitCode = 1;
         console.log(`Connecting to store: ${branch.code}`);
         console.log(`Error connecting to store:`, err);
       }
@@ -119,27 +114,27 @@ class ConnectionService {
 
   async getStorePool(branch: any): Promise<sql.ConnectionPool | null> {
     const connection = this.dbConnectionMap.get(branch.code);
-    if (connection && connection.connected) {
+    if (connection?.pool && !connection.pool.connected) await connection.pool.close();
+    if (connection?.pool?.connected) {
       return connection.pool;
     } else {
-      await sql
-        .connect({
-          user: branch.username,
-          password: branch.password,
-          server: branch.host,
-          database: branch.database,
-          port: branch.port,
-          options: {
-            encrypt: false,
-            trustServerCertificate: true,
-            requestTimeout: 60000,
-          },
-          pool: {
-            max: 10,
-            min: 0,
-            idleTimeoutMillis: 30000,
-          },
-        })
+      await new sql.ConnectionPool({
+        user: branch.username,
+        password: branch.password,
+        server: branch.host,
+        database: branch.database,
+        port: branch.port,
+        options: {
+          encrypt: false,
+          trustServerCertificate: true,
+          requestTimeout: 60000,
+        },
+        pool: {
+          max: 10,
+          min: 0,
+          idleTimeoutMillis: 30000,
+        },
+      }).connect()
         .then((connectionPool) => {
           this.dbConnectionMap.set(branch.code, {
             connected: true,
@@ -147,6 +142,7 @@ class ConnectionService {
           });
         })
         .catch((error) => {
+          process.exitCode = 1;
           console.error('Error connecting to Icool database:', error);
         });
 
@@ -157,27 +153,27 @@ class ConnectionService {
 
   async getMasterPool(): Promise<sql.ConnectionPool | null> {
     const connection = this.dbConnectionMap.get('master');
-    if (connection && connection.connected) {
+    if (connection?.pool && !connection.pool.connected) await connection.pool.close();
+    if (connection?.pool?.connected) {
       return connection.pool;
     } else {
-      await sql
-        .connect({
-          user: process.env.MASTER_DB_USER,
-          password: process.env.MASTER_DB_PASSWORD,
-          server: process.env.MASTER_DB_HOST!,
-          database: process.env.MASTER_DB_NAME,
-          port: Number(process.env.MASTER_DB_PORT!),
-          options: {
-            encrypt: false,
-            trustServerCertificate: true,
-            requestTimeout: 60000,
-          },
-          pool: {
-            max: 10,
-            min: 0,
-            idleTimeoutMillis: 30000,
-          },
-        })
+      await new sql.ConnectionPool({
+        user: process.env.MASTER_DB_USER,
+        password: process.env.MASTER_DB_PASSWORD,
+        server: process.env.MASTER_DB_HOST!,
+        database: process.env.MASTER_DB_NAME,
+        port: Number(process.env.MASTER_DB_PORT!),
+        options: {
+          encrypt: false,
+          trustServerCertificate: true,
+          requestTimeout: 60000,
+        },
+        pool: {
+          max: 10,
+          min: 0,
+          idleTimeoutMillis: 30000,
+        },
+      }).connect()
         .then((connectionPool) => {
           this.dbConnectionMap.set('master', {
             connected: true,
@@ -185,6 +181,7 @@ class ConnectionService {
           });
         })
         .catch((error) => {
+          process.exitCode = 1;
           console.error('Error connecting to Icool database:', error);
         });
 
@@ -195,27 +192,27 @@ class ConnectionService {
 
   async getCetralPool(): Promise<sql.ConnectionPool | null> {
     const connection = this.dbConnectionMap.get('central');
-    if (connection && connection.connected) {
+    if (connection?.pool && !connection.pool.connected) await connection.pool.close();
+    if (connection?.pool?.connected) {
       return connection.pool;
     } else {
-      await sql
-        .connect({
-          user: process.env.CENTRAL_DB_USER,
-          password: process.env.CENTRAL_DB_PASSWORD,
-          server: process.env.CENTRAL_DB_HOST!,
-          database: process.env.CENTRAL_DB_NAME,
-          port: Number(process.env.CENTRAL_DB_PORT!),
-          options: {
-            encrypt: false,
-            trustServerCertificate: true,
-            requestTimeout: 60000,
-          },
-          pool: {
-            max: 10,
-            min: 0,
-            idleTimeoutMillis: 30000,
-          },
-        })
+      await new sql.ConnectionPool({
+        user: process.env.CENTRAL_DB_USER,
+        password: process.env.CENTRAL_DB_PASSWORD,
+        server: process.env.CENTRAL_DB_HOST!,
+        database: process.env.CENTRAL_DB_NAME,
+        port: Number(process.env.CENTRAL_DB_PORT!),
+        options: {
+          encrypt: false,
+          trustServerCertificate: true,
+          requestTimeout: 60000,
+        },
+        pool: {
+          max: 10,
+          min: 0,
+          idleTimeoutMillis: 30000,
+        },
+      }).connect()
         .then((connectionPool) => {
           this.dbConnectionMap.set('central', {
             connected: true,
@@ -223,6 +220,7 @@ class ConnectionService {
           });
         })
         .catch((error) => {
+          process.exitCode = 1;
           console.error('Error connecting to Central database:', error);
         });
 
@@ -230,12 +228,16 @@ class ConnectionService {
       return newConnection ? newConnection.pool : null;
     }
   }
+  async closeAll(): Promise<void> {
+    const pools = [...new Set([...this.dbConnectionMap.values()].map((value) => value.pool))];
+    this.dbConnectionMap.clear();
+    const results = await Promise.allSettled(pools.map((pool) => pool?.close()));
+    const failure = results.find((result) => result.status === 'rejected');
+    if (failure?.status === 'rejected') throw failure.reason;
+  }
 }
 
-async function getInsertableColumns(
-  pool: sql.ConnectionPool,
-  tableName: string,
-): Promise<IColumnsCache> {
+async function getInsertableColumns(pool: sql.ConnectionPool, tableName: string): Promise<IColumnsCache> {
   const result = await pool.request().query(`
     SELECT c.COLUMN_NAME
     FROM INFORMATION_SCHEMA.COLUMNS c
@@ -247,6 +249,8 @@ async function getInsertableColumns(
       AND c.DATA_TYPE <> 'timestamp'
     ORDER BY c.ORDINAL_POSITION
   `);
+
+  if (!result.recordset.length) throw new Error(`No insertable columns found for ${tableName}`);
 
   const columns: string[] = [];
   let columnList = '';
@@ -299,17 +303,11 @@ async function rowInsertion(
     const inserted = await request.query(insertQuery);
     const isInserted = inserted.rowsAffected[0] > 0;
 
-    console.log(
-      'Inserted into',
-      tableName,
-      'ID:',
-      row['id'],
-      'Status:',
-      isInserted,
-    );
+    console.log('Inserted into', tableName, 'ID:', row['id'], 'Status:', isInserted);
 
     return inserted;
   } catch (err) {
+    process.exitCode = 1;
     console.error(`Error inserting row into ${tableName}:`, err);
     return null;
   }
@@ -332,29 +330,19 @@ async function shiftReplication(
     `);
 
     console.log('--------------------SHIFT------------------------');
-    console.log(
-      `Shifts for store ${storeCode} on date ${date}:`,
-      data.recordset.length,
-    );
+    console.log(`Shifts for store ${storeCode} on date ${date}:`, data.recordset.length);
 
     if (data.recordset.length === 0) return [];
     const shiftIds: string[] = [];
     for (const row of data.recordset) {
       shiftIds.push(row.id);
 
-      await rowInsertion(
-        masterConnection,
-        'Ca',
-        columnList,
-        paramList,
-        upsertList,
-        columns,
-        row,
-      );
+      await rowInsertion(masterConnection, 'Ca', columnList, paramList, upsertList, columns, row);
     }
 
     return shiftIds;
   } catch (err) {
+    process.exitCode = 1;
     console.error('Error during shift replication:', err);
     return [];
   }
@@ -377,24 +365,14 @@ async function feeReplication(
     `);
 
     console.log('--------------------CHIPHI------------------------');
-    console.log(
-      `Fees for store ${storeCode} on date ${date}:`,
-      data.recordset.length,
-    );
+    console.log(`Fees for store ${storeCode} on date ${date}:`, data.recordset.length);
     if (data.recordset.length === 0) return;
 
     for (const row of data.recordset) {
-      await rowInsertion(
-        masterConnection,
-        'ChiTieu',
-        columnList,
-        paramList,
-        upsertList,
-        columns,
-        row,
-      );
+      await rowInsertion(masterConnection, 'ChiTieu', columnList, paramList, upsertList, columns, row);
     }
   } catch (error) {
+    process.exitCode = 1;
     console.error('Error during fee replication:', error);
   }
 }
@@ -415,10 +393,7 @@ async function invoiceReplication(
     `);
 
     console.log('--------------------INVOICE------------------------');
-    console.log(
-      `Invoices for shifts [${shiftIds.join(', ')}]:`,
-      data.recordset.length,
-    );
+    console.log(`Invoices for shifts [${shiftIds.join(', ')}]:`, data.recordset.length);
 
     if (data.recordset.length === 0) return [];
 
@@ -426,19 +401,12 @@ async function invoiceReplication(
     for (const row of data.recordset) {
       ids.push(row.id);
 
-      await rowInsertion(
-        masterConnection,
-        'HoaDon',
-        columnList,
-        paramList,
-        upsertList,
-        columns,
-        row,
-      );
+      await rowInsertion(masterConnection, 'HoaDon', columnList, paramList, upsertList, columns, row);
     }
 
     return ids;
   } catch (error) {
+    process.exitCode = 1;
     console.error('Error during invoice replication:', error);
   }
 }
@@ -460,25 +428,15 @@ async function customerReplication(
     `);
 
     console.log('--------------------CUSTOMER------------------------');
-    console.log(
-      `Customers for store ${storeCode} on date ${date}:`,
-      data.recordset.length,
-    );
+    console.log(`Customers for store ${storeCode} on date ${date}:`, data.recordset.length);
 
     if (data.recordset.length === 0) return;
 
     for (const row of data.recordset) {
-      await rowInsertion(
-        masterConnection,
-        'KhachHang',
-        columnList,
-        paramList,
-        upsertList,
-        columns,
-        row,
-      );
+      await rowInsertion(masterConnection, 'KhachHang', columnList, paramList, upsertList, columns, row);
     }
   } catch (error) {
+    process.exitCode = 1;
     console.error('Error during customer replication:', error);
   }
 }
@@ -498,130 +456,95 @@ async function fullTablesReplication(
 
     const data = await storeConnection.request().query(`
       SELECT *
-      FROM ${tableName} 
+      FROM ${tableName}
       WHERE ${field} IN (${invoiceIds.map((b) => `'${b}'`).join(', ')})
     `);
 
-    console.log(
-      '--------------------' + tableName + '------------------------',
-    );
-    console.log(
-      `Records for table ${tableName} and invoices [${invoiceIds.join(', ')}]:`,
-      data.recordset.length,
-    );
+    console.log('--------------------' + tableName + '------------------------');
+    console.log(`Records for table ${tableName} and invoices [${invoiceIds.join(', ')}]:`, data.recordset.length);
     if (data.recordset.length === 0) return;
 
     for (const row of data.recordset) {
-      await rowInsertion(
-        masterConnection,
-        tableName,
-        columnList,
-        paramList,
-        upsertList,
-        columns,
-        row,
-      );
+      await rowInsertion(masterConnection, tableName, columnList, paramList, upsertList, columns, row);
     }
   } catch (error) {
-    console.error(
-      `Error during full replication of table ${tableName}:`,
-      error,
-    );
+    process.exitCode = 1;
+    console.error(`Error during full replication of table ${tableName}:`, error);
   }
 }
 
 // Replicate from Store to Master
-(async () => {
-  const jsonData = readFileSync(
-    join(process.cwd(), 'secret', 'branch.json'),
-    'utf-8',
-  );
-
-  const tables: string[] = [
-    'HoaDon_ChiTietHangHoa',
-    'HoaDon_Combo_HangHoa',
-    'HoaDon_Coupon',
-    'HoaDon_Customer',
-    'HoaDon_DiscountOnSales',
-    'HoaDon_DoanhThu_NhanVien',
-    'HoaDon_GiamGia',
-    'HoaDon_Gift',
-    'HoaDon_Info',
-    'HoaDon_KhachHang',
-    'HoaDon_MIFI',
-    'HoaDon_NVL',
-    'HoaDon_PhuPhi',
-    'HoaDon_Sub',
-    'HoaDon_TraMon',
-    'HoaDon_VAT',
-  ];
-
-  const branchs = JSON.parse(jsonData);
-
+export async function main() {
   const service = new ConnectionService();
-  await service.intialize(branchs);
+  try {
+    console.log('[central-2-master] Script started');
+    const jsonData = readFileSync(join(process.cwd(), 'secret', 'branch.json'), 'utf-8');
 
-  const masterCon = await service.getCetralPool();
-  const storeCon = await service.getMasterPool();
-  if (!masterCon || !storeCon) {
-    console.error('Master database connection failed.');
-    return;
-  }
+    const tables: string[] = [
+      'HoaDon_ChiTietHangHoa',
+      'HoaDon_Combo_HangHoa',
+      'HoaDon_Coupon',
+      'HoaDon_Customer',
+      'HoaDon_DiscountOnSales',
+      'HoaDon_DoanhThu_NhanVien',
+      'HoaDon_GiamGia',
+      'HoaDon_Gift',
+      'HoaDon_Info',
+      'HoaDon_KhachHang',
+      'HoaDon_MIFI',
+      'HoaDon_NVL',
+      'HoaDon_PhuPhi',
+      'HoaDon_Sub',
+      'HoaDon_TraMon',
+      'HoaDon_VAT',
+    ];
 
-  const columnsCache = new Map<string, IColumnsCache>();
-  for (const table of [...tables, 'Ca', 'ChiTieu', 'HoaDon', 'KhachHang']) {
-    const columns = await getInsertableColumns(masterCon!, table);
-    columnsCache.set(table, columns);
-  }
+    const branchs = JSON.parse(jsonData);
 
-  for (const branch of branchs) {
-    for (const date of DATES) {
-      try {
-        const [shiftIds] = await Promise.all([
-          shiftReplication(
-            storeCon,
-            masterCon,
-            columnsCache.get('Ca')!,
-            branch.code,
-            date,
-          ),
-          feeReplication(
-            storeCon,
-            masterCon,
-            columnsCache.get('ChiTieu')!,
-            branch.code,
-            date,
-          ),
-          customerReplication(
-            storeCon,
-            masterCon,
-            columnsCache.get('KhachHang')!,
-            branch.code,
-            date,
-          ),
-        ]);
-        if (!shiftIds?.length) continue;
+    await service.intialize([]);
 
-        const invoiceIds = await invoiceReplication(
-          storeCon,
-          masterCon,
-          columnsCache.get('HoaDon')!,
-          shiftIds,
-        );
-        if (!invoiceIds || !invoiceIds.length) continue;
+    const masterCon = await service.getCetralPool();
+    const storeCon = await service.getMasterPool();
+    if (!masterCon || !storeCon) {
+      throw new Error('Master database connection failed.');
+    }
 
-        for (const table of tables) {
-          await fullTablesReplication(
-            storeCon,
-            masterCon,
-            columnsCache.get(table)!,
-            invoiceIds,
-            table,
-          );
+    const columnsCache = new Map<string, IColumnsCache>();
+    for (const table of [...tables, 'Ca', 'ChiTieu', 'HoaDon', 'KhachHang']) {
+      const columns = await getInsertableColumns(masterCon!, table);
+      columnsCache.set(table, columns);
+    }
+
+    for (const branch of branchs) {
+      for (const date of DATES) {
+        try {
+          const [shiftIds] = await Promise.all([
+            shiftReplication(storeCon, masterCon, columnsCache.get('Ca')!, branch.code, date),
+            feeReplication(storeCon, masterCon, columnsCache.get('ChiTieu')!, branch.code, date),
+            customerReplication(storeCon, masterCon, columnsCache.get('KhachHang')!, branch.code, date),
+          ]);
+          if (!shiftIds?.length) continue;
+
+          const invoiceIds = await invoiceReplication(storeCon, masterCon, columnsCache.get('HoaDon')!, shiftIds);
+          if (!invoiceIds || !invoiceIds.length) continue;
+
+          for (const table of tables) {
+            await fullTablesReplication(storeCon, masterCon, columnsCache.get(table)!, invoiceIds, table);
+          }
+        } catch (error) {
+          process.exitCode = 1;
+          console.error(`Error processing branch ${branch.code}:`, error);
         }
-      } catch (error) {
-        console.error(`Error processing branch ${branch.code}:`, error);
       }
     }
+  } finally {
+    await service.closeAll();
   }
-})();
+}
+
+if (require.main === module) {
+  main().catch((error) => {
+    console.error(error);
+    process.exitCode = 1;
+  });
+}

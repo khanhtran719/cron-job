@@ -6,7 +6,13 @@
   "scripts": {
     "dev": "nodemon --exec ts-node src/index.ts",
     "build": "tsc",
-    "start": "pm2 start ecosystem.config.js"
+    "start": "node dist/index.js",
+    "start:once": "node dist/index.js once",
+    "start:cron": "node dist/index.js cron",
+    "start:store": "node dist/scripts/store-replication.js",
+    "start:central": "node dist/scripts/central-2-master.js",
+    "start:complain": "node dist/scripts/complain-replication.js",
+    "test": "node --test test/*.test.cjs"
   },
   "keywords": [],
   "author": "",

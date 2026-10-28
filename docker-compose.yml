@@ -1,7 +1,14 @@
 name: cron-service
 services:
   cron-service:
-    image: khanhtrn2608/cron_job:production
+    build: .
+    image: manual-async-job:local
+    init: true
+    stop_grace_period: 2m
+    environment:
+      JOB_MODE: ${JOB_MODE:-cron}
+      NODE_APP_INSTANCE: '0'
+      NODE_APP_INSTANCES: '1'
     volumes:
       - ./logs:/app/logs
       - ./secret:/app/secret

@@ -5,4 +5,6 @@ npm-debug.log
 .DS_Store
 
 secret/*
+!secret/branch.example.json
+!secret/old-branchs.example.json
 logs/*.log

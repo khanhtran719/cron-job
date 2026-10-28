@@ -22,12 +22,9 @@ RUN npm run build
 
 FROM base AS runner
 
-RUN npm i -g pm2@latest
-
 ENV TZ='Asia/Ho_Chi_Minh'
 
-COPY --from=builder /app/dist ./
+COPY --from=builder /app/dist ./dist
 COPY --from=deps /app/node_modules ./node_modules
 
-EXPOSE 3000
-CMD ["pm2-runtime", "index.js"]
+CMD ["node", "dist/index.js"]

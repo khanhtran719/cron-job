@@ -1,12 +1,10 @@
-import { readFileSync } from 'fs';
+import { randomUUID } from 'node:crypto';
 import sql from 'mssql';
-import { join } from 'path';
-import { getInsBranchs } from '../branch';
-import { INSTANCE_ID } from '../constant';
+import { assignedBranchs } from '../branch';
 import { connection } from '../database';
-import { log } from '../log';
 
 const NON_UPDATABLE_COLUMNS = ['id', 'rowguid'];
+const TABLES_WITH_ID = ['HoaDon_Sub', 'HoaDon_Gift', 'HoaDon_MIFI', 'HoaDon_KhachHang', 'Phong'];
 
 interface IColumnsCache {
   columns: string[];
@@ -15,115 +13,66 @@ interface IColumnsCache {
   upsertList: string;
 }
 
-export async function HandleAsyncData(
-  dates: string[],
-  tables: string[],
-  revenueTables: string[],
-) {
-  log('Start job store to central');
-
-  const allBranchs = JSON.parse(
-    readFileSync(join(process.cwd(), 'secret', 'branch.json'), 'utf-8'),
-  );
-
-  const branchs = allBranchs.filter(
-    (branch: any) => getInsBranchs(branch.code) === INSTANCE_ID,
-  );
+export async function HandleAsyncData(dates: string[], tables: string[], revenueTables: string[]) {
+  console.log('Start job store to central');
+  const summary = { read: 0, written: 0, failed: 0 };
+  if (assignedBranchs.length === 0) return summary;
 
   const masterCon = await connection.getMasterPool();
   if (!masterCon) {
-    log('Master connection not established');
-    return;
+    throw new Error('Master connection not established');
   }
 
   const columnsCache = new Map<string, IColumnsCache>();
-  for (const table of [
-    ...tables,
-    ...revenueTables,
-    'Ca',
-    'HoaDon',
-    'KhachHang',
-    'ChiPhi',
-  ]) {
+  for (const table of new Set(tables)) {
     const columns = await getInsertableColumns(masterCon!, table);
     columnsCache.set(table, columns);
   }
 
-  for (const branch of branchs) {
+  for (const branch of assignedBranchs) {
     console.log(`Processing branch: ${branch.code}`);
     for (const date of dates) {
       try {
         const storeCon = await connection.getStorePool(branch);
         if (!storeCon) {
-          log(`Connection not established for branch ${branch.code}`);
-          continue;
+          throw new Error(`Connection not established for branch ${branch.code}`);
         }
 
+        // await phongReplication(storeCon, masterCon, columnsCache.get('Phong')!, branch.code);
+
         const [shiftIds] = await Promise.all([
-          shiftReplication(
-            storeCon,
-            masterCon,
-            columnsCache.get('Ca')!,
-            branch.code,
-            date,
-          ),
-          customerReplication(
-            storeCon,
-            masterCon,
-            columnsCache.get('KhachHang')!,
-            branch.code,
-            date,
-          ),
-          chiphiReplication(
-            storeCon,
-            masterCon,
-            columnsCache.get('ChiPhi')!,
-            date,
-          ),
+          shiftReplication(storeCon, branch.code, date),
+          // customerReplication(storeCon, masterCon, columnsCache.get('KhachHang')!, branch.code, date),
+          // chiphiReplication(storeCon, masterCon, columnsCache.get('ChiPhi')!, date),
         ]);
         if (!shiftIds?.length) continue;
 
-        const invoiceIds = await invoiceReplication(
-          storeCon,
-          masterCon,
-          columnsCache.get('HoaDon')!,
-          shiftIds,
-        );
+        const invoiceIds = await invoiceReplication(storeCon, shiftIds);
         if (!invoiceIds || !invoiceIds.length) continue;
 
         for (const table of tables) {
-          await fullTablesReplication(
-            storeCon,
-            masterCon,
-            columnsCache.get(table)!,
-            invoiceIds,
-            table,
-            branch.code,
-          );
+          const result = await fullTablesReplication(storeCon, masterCon, columnsCache.get(table)!, invoiceIds, table, branch.code);
+          summary.read += result.read;
+          summary.written += result.written;
+          summary.failed += result.failed;
         }
 
-        for (const table of revenueTables) {
-          await revenueTablesReplication(
-            storeCon,
-            masterCon,
-            columnsCache.get(table)!,
-            date,
-            table,
-            branch.code,
-          );
-        }
+        // for (const table of revenueTables) {
+        //   await revenueTablesReplication(storeCon, masterCon, columnsCache.get(table)!, date, table, branch.code);
+        // }
       } catch (error) {
-        log(`Error processing branch ${branch.code} on date ${date}`);
+        summary.failed++;
+        console.log(`Error processing branch ${branch.code} on date ${date}`);
         console.error(`Error processing branch ${branch.code}:`, error);
       }
     }
   }
+  console.log('[JOB] Result:', summary);
+  if (summary.failed) throw new Error(`Job failed: ${summary.failed} error(s), ${summary.written}/${summary.read} rows written`);
+  return summary;
 }
 
-async function getInsertableColumns(
-  pool: sql.ConnectionPool,
-  tableName: string,
-): Promise<IColumnsCache> {
+async function getInsertableColumns(pool: sql.ConnectionPool, tableName: string): Promise<IColumnsCache> {
   const result = await pool.request().query(`
     SELECT c.COLUMN_NAME
     FROM INFORMATION_SCHEMA.COLUMNS c
@@ -135,6 +84,10 @@ async function getInsertableColumns(
       AND c.DATA_TYPE <> 'timestamp'
     ORDER BY c.ORDINAL_POSITION
   `);
+
+  if (result.recordset.length === 0) {
+    throw new Error(`No insertable columns found for target table ${tableName}`);
+  }
 
   const columns: string[] = [];
   let columnList = '';
@@ -167,21 +120,17 @@ async function rowInsertion(
   row: any,
   cuahang_id?: string,
 ) {
-  const talbeWithId: string[] = [
-    'HoaDon_Sub',
-    'HoaDon_Gift',
-    'HoaDon_MIFI',
-    'HoaDon_KhachHang',
-  ];
-
   let pkColumn = 'id';
-  if (!talbeWithId.includes(tableName)) {
+  if (!TABLES_WITH_ID.includes(tableName)) {
     if (columns.includes('rowguid')) {
       pkColumn = 'rowguid';
     }
   }
 
   try {
+    if (row[pkColumn] === null || row[pkColumn] === undefined || row[pkColumn] === '') {
+      throw new Error(`Missing stable key ${pkColumn} for ${tableName}`);
+    }
     const request = masterConnection.request();
 
     columns.forEach((col) => {
@@ -204,23 +153,12 @@ async function rowInsertion(
     const inserted = await request.query(insertQuery);
     const isInserted = inserted.rowsAffected[0] > 0;
 
-    console.log(
-      'Inserted into',
-      tableName,
-      pkColumn + ':',
-      row[pkColumn],
-      'Status:',
-      isInserted,
-    );
+    console.log('Inserted into', tableName, pkColumn + ':', row[pkColumn], 'Status:', isInserted);
 
     return inserted;
   } catch (err) {
-    log(
-      `[${
-        cuahang_id ?? null
-      }] Error inserting row into ${tableName} with ${pkColumn} ${
-        row[pkColumn]
-      }` + `: ${err}`,
+    console.log(
+      `[${cuahang_id ?? null}] Error inserting row into ${tableName} with ${pkColumn} ${row[pkColumn]}` + `: ${err}`,
     );
 
     return null;
@@ -229,12 +167,9 @@ async function rowInsertion(
 
 async function shiftReplication(
   storeConnection: sql.ConnectionPool,
-  masterConnection: sql.ConnectionPool,
-  columnsCache: IColumnsCache,
   storeCode: string,
   date: string,
 ) {
-  const { columns, columnList, paramList, upsertList } = columnsCache;
   try {
     const data = await storeConnection.request().query(`
       SELECT *
@@ -243,10 +178,7 @@ async function shiftReplication(
     `);
 
     console.log('--------------------SHIFT------------------------');
-    console.log(
-      `Shifts for store ${storeCode} on date ${date}:`,
-      data.recordset.length,
-    );
+    console.log(`Shifts for store ${storeCode} on date ${date}:`, data.recordset.length);
 
     if (data.recordset.length === 0) return [];
 
@@ -254,22 +186,41 @@ async function shiftReplication(
     for (const row of data.recordset) {
       shiftIds.push(row.id);
 
-      await rowInsertion(
-        masterConnection,
-        'Ca',
-        columnList,
-        paramList,
-        upsertList,
-        columns,
-        row,
-        storeCode,
-      );
+      // Parent Ca writes remain disabled in this repair flow.
     }
 
     return shiftIds;
   } catch (err) {
-    log('Error during shift replication: ' + storeCode + ' - ' + date);
-    return [];
+    console.log('Error during shift replication: ' + storeCode + ' - ' + date);
+    throw err;
+  }
+}
+
+async function phongReplication(
+  storeConnection: sql.ConnectionPool,
+  masterConnection: sql.ConnectionPool,
+  columnsCache: IColumnsCache,
+  storeCode: string,
+) {
+  const { columns, columnList, paramList, upsertList } = columnsCache;
+
+  try {
+    const data = await storeConnection.request().query(`
+      SELECT *
+      FROM Phong
+      WHERE cuahang_id = '${storeCode}'
+    `);
+
+    console.log('--------------------CUSTOMER------------------------');
+    console.log(`Phong for cuahang ${storeCode}:`, data.recordset.length);
+
+    if (data.recordset.length === 0) return;
+
+    for (const row of data.recordset) {
+      await rowInsertion(masterConnection, 'Phong', columnList, paramList, upsertList, columns, row);
+    }
+  } catch (error) {
+    console.log('Error during Phong replication: ' + storeCode);
   }
 }
 
@@ -292,26 +243,15 @@ async function chiphiReplication(
     `);
 
     console.log('--------------------CUSTOMER------------------------');
-    console.log(
-      `ChiPhi for month ${month} and year ${year}:`,
-      data.recordset.length,
-    );
+    console.log(`ChiPhi for month ${month} and year ${year}:`, data.recordset.length);
 
     if (data.recordset.length === 0) return;
 
     for (const row of data.recordset) {
-      await rowInsertion(
-        masterConnection,
-        'ChiPhi',
-        columnList,
-        paramList,
-        upsertList,
-        columns,
-        row,
-      );
+      await rowInsertion(masterConnection, 'ChiPhi', columnList, paramList, upsertList, columns, row);
     }
   } catch (error) {
-    log('Error during chiphi replication: ' + date);
+    console.log('Error during chiphi replication: ' + date);
   }
 }
 
@@ -332,36 +272,15 @@ async function revenueTablesReplication(
       WHERE cuahang_id = '${storeCode}' and date = '${date}'
     `);
 
-    console.log(
-      '--------------------' + tableName + '------------------------',
-    );
-    console.log(
-      `Records for table ${tableName} and date [${date}]:`,
-      data.recordset.length,
-    );
+    console.log('--------------------' + tableName + '------------------------');
+    console.log(`Records for table ${tableName} and date [${date}]:`, data.recordset.length);
     if (data.recordset.length === 0) return;
 
     for (const row of data.recordset) {
-      await rowInsertion(
-        masterConnection,
-        tableName,
-        columnList,
-        paramList,
-        upsertList,
-        columns,
-        row,
-        storeCode,
-      );
+      await rowInsertion(masterConnection, tableName, columnList, paramList, upsertList, columns, row, storeCode);
     }
   } catch (error) {
-    log(
-      'Error during revenue table replication: ' +
-        tableName +
-        ' - ' +
-        storeCode +
-        ' - ' +
-        date,
-    );
+    console.log('Error during revenue table replication: ' + tableName + ' - ' + storeCode + ' - ' + date);
   }
 }
 
@@ -381,38 +300,21 @@ async function feeReplication(
     `);
 
     console.log('--------------------CHIPHI------------------------');
-    console.log(
-      `Fees for store ${storeCode} on date ${date}:`,
-      data.recordset.length,
-    );
+    console.log(`Fees for store ${storeCode} on date ${date}:`, data.recordset.length);
     if (data.recordset.length === 0) return;
 
     for (const row of data.recordset) {
-      await rowInsertion(
-        masterConnection,
-        'ChiTieu',
-        columnList,
-        paramList,
-        upsertList,
-        columns,
-        row,
-        storeCode,
-      );
+      await rowInsertion(masterConnection, 'ChiTieu', columnList, paramList, upsertList, columns, row, storeCode);
     }
   } catch (error) {
-    log('Error during fee replication: ' + storeCode + ' - ' + date);
+    console.log('Error during fee replication: ' + storeCode + ' - ' + date);
   }
 }
 
 async function invoiceReplication(
   storeConnection: sql.ConnectionPool,
-  masterConnection: sql.ConnectionPool,
-  columnsCache: IColumnsCache,
   shiftIds: string[],
-  storeCode?: string,
 ) {
-  const { columns, columnList, paramList, upsertList } = columnsCache;
-
   try {
     const data = await storeConnection.request().query(`
       SELECT *
@@ -421,10 +323,7 @@ async function invoiceReplication(
     `);
 
     console.log('--------------------INVOICE------------------------');
-    console.log(
-      `Invoices for shifts [${shiftIds.join(', ')}]:`,
-      data.recordset.length,
-    );
+    console.log(`Invoices for shifts [${shiftIds.join(', ')}]:`, data.recordset.length);
 
     if (data.recordset.length === 0) return [];
 
@@ -432,21 +331,13 @@ async function invoiceReplication(
     for (const row of data.recordset) {
       ids.push(row.id);
 
-      await rowInsertion(
-        masterConnection,
-        'HoaDon',
-        columnList,
-        paramList,
-        upsertList,
-        columns,
-        row,
-        storeCode,
-      );
+      // Parent HoaDon writes remain disabled in this repair flow.
     }
 
     return ids;
   } catch (error) {
-    log('Error during invoice replication with shifts: ' + shiftIds.join(', '));
+    console.log('Error during invoice replication with shifts: ' + shiftIds.join(', '));
+    throw error;
   }
 }
 
@@ -466,27 +357,15 @@ async function customerReplication(
     `);
 
     console.log('--------------------CUSTOMER------------------------');
-    console.log(
-      `Customers for store ${storeCode} on date ${date}:`,
-      data.recordset.length,
-    );
+    console.log(`Customers for store ${storeCode} on date ${date}:`, data.recordset.length);
 
     if (data.recordset.length === 0) return;
 
     for (const row of data.recordset) {
-      await rowInsertion(
-        masterConnection,
-        'KhachHang',
-        columnList,
-        paramList,
-        upsertList,
-        columns,
-        row,
-        storeCode,
-      );
+      await rowInsertion(masterConnection, 'KhachHang', columnList, paramList, upsertList, columns, row, storeCode);
     }
   } catch (error) {
-    log('Error during customer replication: ' + storeCode + ' - ' + date);
+    console.log('Error during customer replication: ' + storeCode + ' - ' + date);
   }
 }
 
@@ -499,6 +378,7 @@ async function fullTablesReplication(
   storeCode: string,
 ) {
   const { columns, columnList, paramList, upsertList } = columnsCache;
+  const summary = { read: 0, written: 0, failed: 0 };
 
   try {
     let field = 'bill_id';
@@ -510,33 +390,21 @@ async function fullTablesReplication(
       WHERE ${field} IN (${invoiceIds.map((b) => `'${b}'`).join(', ')})
     `);
 
-    console.log(
-      '--------------------' + tableName + '------------------------',
-    );
-    console.log(
-      `Records for table ${tableName} and invoices [${invoiceIds.join(', ')}]:`,
-      data.recordset.length,
-    );
-    if (data.recordset.length === 0) return;
+    console.log('--------------------' + tableName + '------------------------');
+    console.log(`Records for table ${tableName} and invoices [${invoiceIds.join(', ')}]:`, data.recordset.length);
+    summary.read = data.recordset.length;
 
     for (const row of data.recordset) {
-      await rowInsertion(
-        masterConnection,
-        tableName,
-        columnList,
-        paramList,
-        upsertList,
-        columns,
-        row,
-        storeCode,
-      );
+      if (!row['rowguid'] && (TABLES_WITH_ID.includes(tableName) || !columns.includes('rowguid'))) {
+        row['rowguid'] = randomUUID();
+      }
+      const inserted = await rowInsertion(masterConnection, tableName, columnList, paramList, upsertList, columns, row, storeCode);
+      if (inserted) summary.written++;
+      else summary.failed++;
     }
+    return summary;
   } catch (error) {
-    log(
-      'Error during table replication: ' +
-        tableName +
-        ' - ' +
-        invoiceIds.join(', '),
-    );
+    console.log('Error during table replication: ' + tableName + ' - ' + invoiceIds.join(', '));
+    throw error;
   }
 }

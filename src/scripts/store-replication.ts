@@ -1,5 +1,5 @@
 import dotenv from 'dotenv';
-import { appendFileSync, existsSync, mkdirSync } from 'fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'fs';
 import sql from 'mssql';
 import { join } from 'path';
 
@@ -19,16 +19,7 @@ export function log(message: string) {
 }
 
 // SETTING DATE TO REPLICATE
-const DATES: string[] = [
-  '2026-01-20',
-  '2026-01-21',
-  '2026-01-22',
-  '2026-01-23',
-  '2026-01-24',
-  '2026-01-25',
-  '2026-01-26',
-  '2026-01-27',
-];
+const DATES: string[] = ['2026-01-20', '2026-01-21', '2026-01-22', '2026-01-23', '2026-01-24', '2026-01-25'];
 
 const NON_UPDATABLE_COLUMNS = ['id', 'rowguid'];
 
@@ -48,7 +39,41 @@ class ConnectionService {
 
   constructor() {}
 
-  async intialize(): Promise<void> {
+  async intialize(branchs: any[]): Promise<void> {
+    for (const branch of branchs) {
+      try {
+        const branchPool = new sql.ConnectionPool({
+          user: branch.username,
+          password: branch.password,
+          server: branch.host,
+          database: branch.database,
+          port: branch.port,
+          options: {
+            encrypt: false,
+            trustServerCertificate: true,
+            requestTimeout: 60000,
+            connectTimeout: 60000,
+          },
+          pool: {
+            max: 10,
+            min: 0,
+            idleTimeoutMillis: 30000,
+          },
+        });
+
+        await branchPool.connect();
+
+        this.dbConnectionMap.set(branch.code, {
+          connected: true,
+          pool: branchPool,
+        });
+      } catch (err) {
+        process.exitCode = 1;
+        console.log(`Connecting to store: ${branch.code}`);
+        console.log(`Error connecting to store:`, err);
+      }
+    }
+
     const masterPool = new sql.ConnectionPool({
       user: process.env.MASTER_DB_USER,
       password: process.env.MASTER_DB_PASSWORD,
@@ -72,55 +97,70 @@ class ConnectionService {
       connected: true,
       pool: masterPool,
     });
+  }
 
-    const centralPool = new sql.ConnectionPool({
-      user: process.env.CENTRAL_DB_USER,
-      password: process.env.CENTRAL_DB_PASSWORD,
-      server: process.env.CENTRAL_DB_HOST!,
-      database: process.env.CENTRAL_DB_NAME,
-      port: Number(process.env.CENTRAL_DB_PORT!),
-      options: {
-        encrypt: false,
-        trustServerCertificate: true,
-        requestTimeout: 60000,
-      },
-      pool: {
-        max: 10,
-        min: 0,
-        idleTimeoutMillis: 30000,
-      },
-    });
+  async getStorePool(branch: any): Promise<sql.ConnectionPool | null> {
+    const connection = this.dbConnectionMap.get(branch.code);
+    if (connection?.pool && !connection.pool.connected) await connection.pool.close();
+    if (connection?.pool?.connected) {
+      return connection.pool;
+    } else {
+      await new sql.ConnectionPool({
+        user: branch.username,
+        password: branch.password,
+        server: branch.host,
+        database: branch.database,
+        port: branch.port,
+        options: {
+          encrypt: false,
+          trustServerCertificate: true,
+          requestTimeout: 60000,
+          connectTimeout: 60000,
+        },
+        pool: {
+          max: 10,
+          min: 0,
+          idleTimeoutMillis: 30000,
+        },
+      }).connect()
+        .then((connectionPool) => {
+          this.dbConnectionMap.set(branch.code, {
+            connected: true,
+            pool: connectionPool,
+          });
+        })
+        .catch((error) => {
+          process.exitCode = 1;
+          console.error('Error connecting to Icool database:', error);
+        });
 
-    await centralPool.connect();
-
-    this.dbConnectionMap.set('central', {
-      connected: true,
-      pool: centralPool,
-    });
+      const newConnection = this.dbConnectionMap.get(branch.code);
+      return newConnection ? newConnection.pool : null;
+    }
   }
 
   async getMasterPool(): Promise<sql.ConnectionPool | null> {
     const connection = this.dbConnectionMap.get('master');
-    if (connection && connection.connected) {
+    if (connection?.pool && !connection.pool.connected) await connection.pool.close();
+    if (connection?.pool?.connected) {
       return connection.pool;
     } else {
-      await sql
-        .connect({
-          user: process.env.MASTER_DB_USER,
-          password: process.env.MASTER_DB_PASSWORD,
-          server: process.env.MASTER_DB_HOST!,
-          database: process.env.MASTER_DB_NAME,
-          port: Number(process.env.MASTER_DB_PORT!),
-          options: {
-            encrypt: false,
-            trustServerCertificate: true,
-          },
-          pool: {
-            max: 10,
-            min: 0,
-            idleTimeoutMillis: 30000,
-          },
-        })
+      await new sql.ConnectionPool({
+        user: process.env.MASTER_DB_USER,
+        password: process.env.MASTER_DB_PASSWORD,
+        server: process.env.MASTER_DB_HOST!,
+        database: process.env.MASTER_DB_NAME,
+        port: Number(process.env.MASTER_DB_PORT!),
+        options: {
+          encrypt: false,
+          trustServerCertificate: true,
+        },
+        pool: {
+          max: 10,
+          min: 0,
+          idleTimeoutMillis: 30000,
+        },
+      }).connect()
         .then((connectionPool) => {
           this.dbConnectionMap.set('master', {
             connected: true,
@@ -128,6 +168,7 @@ class ConnectionService {
           });
         })
         .catch((error) => {
+          process.exitCode = 1;
           console.error('Error connecting to Icool database:', error);
         });
 
@@ -138,26 +179,26 @@ class ConnectionService {
 
   async getCetralPool(): Promise<sql.ConnectionPool | null> {
     const connection = this.dbConnectionMap.get('central');
-    if (connection && connection.connected) {
+    if (connection?.pool && !connection.pool.connected) await connection.pool.close();
+    if (connection?.pool?.connected) {
       return connection.pool;
     } else {
-      await sql
-        .connect({
-          user: process.env.CENTRAL_DB_USER,
-          password: process.env.CENTRAL_DB_PASSWORD,
-          server: process.env.CENTRAL_DB_HOST!,
-          database: process.env.CENTRAL_DB_NAME,
-          port: Number(process.env.CENTRAL_DB_PORT!),
-          options: {
-            encrypt: false,
-            trustServerCertificate: true,
-          },
-          pool: {
-            max: 10,
-            min: 0,
-            idleTimeoutMillis: 30000,
-          },
-        })
+      await new sql.ConnectionPool({
+        user: process.env.CENTRAL_DB_USER,
+        password: process.env.CENTRAL_DB_PASSWORD,
+        server: process.env.CENTRAL_DB_HOST!,
+        database: process.env.CENTRAL_DB_NAME,
+        port: Number(process.env.CENTRAL_DB_PORT!),
+        options: {
+          encrypt: false,
+          trustServerCertificate: true,
+        },
+        pool: {
+          max: 10,
+          min: 0,
+          idleTimeoutMillis: 30000,
+        },
+      }).connect()
         .then((connectionPool) => {
           this.dbConnectionMap.set('central', {
             connected: true,
@@ -165,6 +206,7 @@ class ConnectionService {
           });
         })
         .catch((error) => {
+          process.exitCode = 1;
           console.error('Error connecting to Central database:', error);
         });
 
@@ -172,12 +214,16 @@ class ConnectionService {
       return newConnection ? newConnection.pool : null;
     }
   }
+  async closeAll(): Promise<void> {
+    const pools = [...new Set([...this.dbConnectionMap.values()].map((value) => value.pool))];
+    this.dbConnectionMap.clear();
+    const results = await Promise.allSettled(pools.map((pool) => pool?.close()));
+    const failure = results.find((result) => result.status === 'rejected');
+    if (failure?.status === 'rejected') throw failure.reason;
+  }
 }
 
-async function getInsertableColumns(
-  pool: sql.ConnectionPool,
-  tableName: string,
-): Promise<IColumnsCache> {
+async function getInsertableColumns(pool: sql.ConnectionPool, tableName: string): Promise<IColumnsCache> {
   const result = await pool.request().query(`
     SELECT c.COLUMN_NAME
     FROM INFORMATION_SCHEMA.COLUMNS c
@@ -191,6 +237,8 @@ async function getInsertableColumns(
   `);
 
   const talbeWithId: string[] = ['HoaDon_Sub', 'HoaDon_Gift', 'HoaDon_MIFI'];
+  if (!result.recordset.length) throw new Error(`No insertable columns found for ${tableName}`);
+
   const columns: string[] = [];
 
   let columnList = '';
@@ -253,132 +301,41 @@ async function rowInsertion(
       request.input(col, row[col]);
     });
 
-    const insertQuery = `
-      UPDATE ${tableName}
-      SET ${upsertList}
-      WHERE ${pkColumn} = @${pkColumn};
+    // const insertQuery = `
+    //   UPDATE ${tableName}
+    //   SET ${upsertList}
+    //   WHERE ${pkColumn} = @${pkColumn};
 
-      -- 2. If no row updated → INSERT
-      IF @@ROWCOUNT = 0
-      BEGIN
+    //   -- 2. If no row updated → INSERT
+    //   IF @@ROWCOUNT = 0
+    //   BEGIN
+    //     INSERT INTO ${tableName} (${columnList})
+    //     VALUES (${paramList});
+    //   END
+    // `;
+
+    const insertQuery = `
+    IF NOT EXISTS (
+        SELECT 1
+        FROM ${tableName}
+        WHERE ${pkColumn} = @${pkColumn}
+    )
+    BEGIN
         INSERT INTO ${tableName} (${columnList})
         VALUES (${paramList});
-      END
-    `;
+    END
+  `;
 
     const inserted = await request.query(insertQuery);
     const isInserted = inserted.rowsAffected[0] > 0;
 
-    console.log(
-      'Inserted into',
-      tableName,
-      pkColumn + ':',
-      row[pkColumn],
-      'Status:',
-      isInserted,
-    );
+    console.log('Inserted into', tableName, pkColumn + ':', row[pkColumn], 'Status:', isInserted);
 
     return inserted;
   } catch (err) {
-    log(
-      `[${
-        cuahang_id ?? null
-      }] Error inserting row into ${tableName} with ${pkColumn} ${
-        row[pkColumn]
-      }` + `: ${err}`,
-    );
+    process.exitCode = 1;
+    log(`[${cuahang_id ?? null}] Error inserting row into ${tableName} with ${pkColumn} ${row[pkColumn]}` + `: ${err}`);
     return null;
-  }
-}
-
-async function shiftReplication(
-  storeConnection: sql.ConnectionPool,
-  masterConnection: sql.ConnectionPool,
-  columnsCache: IColumnsCache,
-  storeCode: string,
-  date: string,
-) {
-  try {
-    const { columns, columnList, paramList, upsertList } = columnsCache;
-
-    const data = await storeConnection.request().query(`
-      SELECT *
-      FROM Ca
-      WHERE date = '${date}' and cuahang_id = '${storeCode}'
-    `);
-
-    console.log('--------------------SHIFT------------------------');
-    console.log(
-      `Shifts for store ${storeCode} on date ${date}:`,
-      data.recordset.length,
-    );
-
-    if (data.recordset.length === 0) return [];
-    const shiftIds: string[] = [];
-    for (const row of data.recordset) {
-      shiftIds.push(row.id);
-
-      await rowInsertion(
-        masterConnection,
-        'Ca',
-        columnList,
-        paramList,
-        upsertList,
-        columns,
-        row,
-      );
-    }
-
-    return shiftIds;
-  } catch (err) {
-    console.error('Error during shift replication:', err);
-    return [];
-  }
-}
-
-async function invoiceReplication(
-  storeConnection: sql.ConnectionPool,
-  masterConnection: sql.ConnectionPool,
-  columnsCache: IColumnsCache,
-  shiftIds: string[],
-  storeCode?: string,
-) {
-  const { columns, columnList, paramList, upsertList } = columnsCache;
-
-  try {
-    const data = await storeConnection.request().query(`
-      SELECT *
-      FROM HoaDon
-      WHERE ca_id IN (${shiftIds.map((id) => `'${id}'`).join(', ')})
-    `);
-
-    console.log('--------------------INVOICE------------------------');
-    console.log(
-      `Invoices for shifts [${shiftIds.join(', ')}]:`,
-      data.recordset.length,
-    );
-
-    if (data.recordset.length === 0) return [];
-
-    const ids: string[] = [];
-    for (const row of data.recordset) {
-      ids.push(row.id);
-
-      await rowInsertion(
-        masterConnection,
-        'HoaDon',
-        columnList,
-        paramList,
-        upsertList,
-        columns,
-        row,
-        storeCode,
-      );
-    }
-
-    return ids;
-  } catch (error) {
-    console.error('Error during invoice replication:', error);
   }
 }
 
@@ -395,276 +352,64 @@ async function customerReplication(
     const data = await storeConnection.request().query(`
       SELECT *
       FROM KhachHang
-      WHERE coso = '${storeCode}' and created_date >= '${date}'
+      WHERE coso = '${storeCode}' and created_date >= '${date} 00:00:00'
     `);
 
     console.log('--------------------CUSTOMER------------------------');
-    console.log(
-      `Customers for store ${storeCode} on date ${date}:`,
-      data.recordset.length,
-    );
+    console.log(`Customers for store ${storeCode} on date ${date}:`, data.recordset.length);
 
     if (data.recordset.length === 0) return;
 
     for (const row of data.recordset) {
-      await rowInsertion(
-        masterConnection,
-        'KhachHang',
-        columnList,
-        paramList,
-        upsertList,
-        columns,
-        row,
-        storeCode,
-      );
+      await rowInsertion(masterConnection, 'KhachHang', columnList, paramList, upsertList, columns, row);
     }
   } catch (error) {
+    process.exitCode = 1;
     console.error('Error during customer replication:', error);
-  }
-}
-
-async function chiphiReplication(
-  storeConnection: sql.ConnectionPool,
-  masterConnection: sql.ConnectionPool,
-  columnsCache: IColumnsCache,
-  date: string,
-) {
-  const { columns, columnList, paramList, upsertList } = columnsCache;
-
-  const month = new Date(date).getMonth() + 1;
-  const year = new Date(date).getFullYear();
-
-  try {
-    const data = await storeConnection.request().query(`
-      SELECT *
-      FROM ChiPhi
-      WHERE month = ${month} AND year = ${year}
-    `);
-
-    console.log('--------------------CUSTOMER------------------------');
-    console.log(
-      `ChiPhi for month ${month} and year ${year}:`,
-      data.recordset.length,
-    );
-
-    if (data.recordset.length === 0) return;
-
-    for (const row of data.recordset) {
-      await rowInsertion(
-        masterConnection,
-        'ChiPhi',
-        columnList,
-        paramList,
-        upsertList,
-        columns,
-        row,
-      );
-    }
-  } catch (error) {
-    console.error('Error during customer replication:', error);
-  }
-}
-
-async function fullTablesReplication(
-  storeConnection: sql.ConnectionPool,
-  masterConnection: sql.ConnectionPool,
-  columnsCache: IColumnsCache,
-  invoiceIds: string[],
-  tableName: string,
-  storeCode: string,
-) {
-  const { columns, columnList, paramList, upsertList } = columnsCache;
-
-  try {
-    let field = 'bill_id';
-    if (tableName === 'HoaDon_Sub') field = 'source_id';
-
-    const data = await storeConnection.request().query(`
-      SELECT *
-      FROM ${tableName} 
-      WHERE ${field} IN (${invoiceIds.map((b) => `'${b}'`).join(', ')})
-    `);
-
-    console.log(
-      '--------------------' + tableName + '------------------------',
-    );
-    console.log(
-      `Records for table ${tableName} and invoices [${invoiceIds.join(', ')}]:`,
-      data.recordset.length,
-    );
-    if (data.recordset.length === 0) return;
-
-    for (const row of data.recordset) {
-      await rowInsertion(
-        masterConnection,
-        tableName,
-        columnList,
-        paramList,
-        upsertList,
-        columns,
-        row,
-        storeCode,
-      );
-    }
-  } catch (error) {
-    console.error(
-      `Error during full replication of table ${tableName}:`,
-      error,
-    );
-  }
-}
-
-async function revenueTablesReplication(
-  storeConnection: sql.ConnectionPool,
-  masterConnection: sql.ConnectionPool,
-  columnsCache: IColumnsCache,
-  date: string,
-  tableName: string,
-  storeCode: string,
-) {
-  const { columns, columnList, paramList, upsertList } = columnsCache;
-
-  try {
-    const data = await storeConnection.request().query(`
-      SELECT *
-      FROM ${tableName} 
-      WHERE cuahang_id = '${storeCode}' and date = '${date}'
-    `);
-
-    console.log(
-      '--------------------' + tableName + '------------------------',
-    );
-    console.log(
-      `Records for table ${tableName} and date [${date}]:`,
-      data.recordset.length,
-    );
-    if (data.recordset.length === 0) return;
-
-    for (const row of data.recordset) {
-      await rowInsertion(
-        masterConnection,
-        tableName,
-        columnList,
-        paramList,
-        upsertList,
-        columns,
-        row,
-        storeCode,
-      );
-    }
-  } catch (error) {
-    console.error(
-      `Error during revenue replication of table ${tableName}:`,
-      error,
-    );
   }
 }
 
 // Replicate from Store to Master
-(async () => {
-  const tables: string[] = [
-    'HoaDon_ChiTietHangHoa',
-    'HoaDon_Combo_HangHoa',
-    'HoaDon_Coupon',
-    'HoaDon_Customer',
-    'HoaDon_DiscountOnSales',
-    'HoaDon_DoanhThu_NhanVien',
-    'HoaDon_HinhThucThanhToan',
-    'HoaDon_GiamGia',
-    'HoaDon_Gift',
-    'HoaDon_Info',
-    'HoaDon_KhachHang',
-    'HoaDon_MIFI',
-    'HoaDon_NVL',
-    'HoaDon_PhuPhi',
-    'HoaDon_Sub',
-    'HoaDon_TraMon',
-    'HoaDon_VAT',
-  ];
-
-  const revenueTables: string[] = ['ChiTieu', 'DoanhThu', 'DoanhThu_NhanVien'];
-
+export async function main() {
   const service = new ConnectionService();
-  await service.intialize();
+  try {
+    const jsonData = readFileSync(join(process.cwd(), 'secret', 'old-branchs.json'), 'utf-8');
 
-  const originalConn = await service.getMasterPool();
-  const targeConn = await service.getCetralPool();
-  if (!targeConn || !originalConn) {
-    console.error('Database connections could not be established.');
-    return;
-  }
+    const branchs = JSON.parse(jsonData);
 
-  const columnsCache = new Map<string, IColumnsCache>();
-  for (const table of [
-    ...tables,
-    ...revenueTables,
-    'Ca',
-    'HoaDon',
-    'KhachHang',
-    'ChiPhi',
-  ]) {
-    const columns = await getInsertableColumns(targeConn!, table);
-    columnsCache.set(table, columns);
-  }
+    await service.intialize(branchs);
 
-  for (const date of DATES) {
-    try {
-      const [shiftIds] = await Promise.all([
-        shiftReplication(
-          originalConn,
-          targeConn,
-          columnsCache.get('Ca')!,
-          '25',
-          date,
-        ),
-        // customerReplication(
-        //   originalConn,
-        //   targeConn,
-        //   columnsCache.get('KhachHang')!,
-        //   branch.code,
-        //   date,
-        // ),
-        chiphiReplication(
-          originalConn,
-          targeConn,
-          columnsCache.get('ChiPhi')!,
-          date,
-        ),
-      ]);
-      if (!shiftIds?.length) continue;
-
-      const invoiceIds = await invoiceReplication(
-        originalConn,
-        targeConn,
-        columnsCache.get('HoaDon')!,
-        shiftIds,
-        '25',
-      );
-      if (!invoiceIds || !invoiceIds.length) continue;
-
-      for (const table of tables) {
-        await fullTablesReplication(
-          originalConn,
-          targeConn,
-          columnsCache.get(table)!,
-          invoiceIds,
-          table,
-          '25',
-        );
-      }
-
-      for (const table of revenueTables) {
-        await revenueTablesReplication(
-          originalConn,
-          targeConn,
-          columnsCache.get(table)!,
-          date,
-          table,
-          '25',
-        );
-      }
-    } catch (error) {
-      console.error(`Error processing branch 25:`, error);
+    const targeConn = await service.getMasterPool();
+    if (!targeConn) {
+      throw new Error('Database connections could not be established.');
     }
+
+    const columnsCache = new Map<string, IColumnsCache>();
+    for (const table of ['KhachHang']) {
+      const columns = await getInsertableColumns(targeConn!, table);
+      columnsCache.set(table, columns);
+    }
+
+    for (const branch of branchs) {
+      const originalConn = await service.getStorePool(branch);
+      if (!originalConn) {
+        process.exitCode = 1;
+        console.error(`Connection to store ${branch.code} could not be established.`);
+        continue;
+      }
+
+      for (const date of DATES) {
+        await customerReplication(originalConn, targeConn, columnsCache.get('KhachHang')!, branch.code, date);
+      }
+    }
+  } finally {
+    await service.closeAll();
   }
-})();
+}
+
+if (require.main === module) {
+  main().catch((error) => {
+    console.error(error);
+    process.exitCode = 1;
+  });
+}

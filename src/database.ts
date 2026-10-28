@@ -71,38 +71,15 @@ class ConnectionService {
       pool: masterPool,
     });
 
-    const centralPool = new sql.ConnectionPool({
-      user: process.env.CENTRAL_DB_USER,
-      password: process.env.CENTRAL_DB_PASSWORD,
-      server: process.env.CENTRAL_DB_HOST!,
-      database: process.env.CENTRAL_DB_NAME,
-      port: Number(process.env.CENTRAL_DB_PORT!),
-      options: {
-        encrypt: false,
-        trustServerCertificate: true,
-        requestTimeout: 60000,
-      },
-      pool: {
-        max: 10,
-        min: 0,
-        idleTimeoutMillis: 30000,
-      },
-    });
-
-    await centralPool.connect();
-
-    this.dbConnectionMap.set('central', {
-      connected: true,
-      pool: masterPool,
-    });
   }
 
   async getStorePool(branch: any): Promise<sql.ConnectionPool | null> {
     const connection = this.dbConnectionMap.get(branch.code);
-    if (connection && connection.connected) {
+    if (connection?.pool && !connection.pool.connected) await connection.pool.close();
+    if (connection?.pool?.connected) {
       return connection.pool;
     } else {
-      const connectionPool = await sql.connect({
+      const connectionPool = await new sql.ConnectionPool({
         user: branch.username,
         password: branch.password,
         server: branch.host,
@@ -118,7 +95,7 @@ class ConnectionService {
           min: 0,
           idleTimeoutMillis: 30000,
         },
-      });
+      }).connect();
 
       this.dbConnectionMap.set(branch.code, {
         connected: true,
@@ -131,27 +108,27 @@ class ConnectionService {
 
   async getMasterPool(): Promise<sql.ConnectionPool | null> {
     const connection = this.dbConnectionMap.get('master');
-    if (connection && connection.connected) {
+    if (connection?.pool && !connection.pool.connected) await connection.pool.close();
+    if (connection?.pool?.connected) {
       return connection.pool;
     } else {
-      await sql
-        .connect({
-          user: process.env.MASTER_DB_USER,
-          password: process.env.MASTER_DB_PASSWORD,
-          server: process.env.MASTER_DB_HOST!,
-          database: process.env.MASTER_DB_NAME,
-          port: Number(process.env.MASTER_DB_PORT!),
-          options: {
-            encrypt: false,
-            trustServerCertificate: true,
-            requestTimeout: 60000,
-          },
-          pool: {
-            max: 10,
-            min: 0,
-            idleTimeoutMillis: 30000,
-          },
-        })
+      await new sql.ConnectionPool({
+        user: process.env.MASTER_DB_USER,
+        password: process.env.MASTER_DB_PASSWORD,
+        server: process.env.MASTER_DB_HOST!,
+        database: process.env.MASTER_DB_NAME,
+        port: Number(process.env.MASTER_DB_PORT!),
+        options: {
+          encrypt: false,
+          trustServerCertificate: true,
+          requestTimeout: 60000,
+        },
+        pool: {
+          max: 10,
+          min: 0,
+          idleTimeoutMillis: 30000,
+        },
+      }).connect()
         .then((connectionPool) => {
           this.dbConnectionMap.set('master', {
             connected: true,
@@ -167,43 +144,15 @@ class ConnectionService {
     }
   }
 
-  async getCetralPool(): Promise<sql.ConnectionPool | null> {
-    const connection = this.dbConnectionMap.get('central');
-    if (connection && connection.connected) {
-      return connection.pool;
-    } else {
-      await sql
-        .connect({
-          user: process.env.CENTRAL_DB_USER,
-          password: process.env.CENTRAL_DB_PASSWORD,
-          server: process.env.CENTRAL_DB_HOST!,
-          database: process.env.CENTRAL_DB_NAME,
-          port: Number(process.env.CENTRAL_DB_PORT!),
-          options: {
-            encrypt: false,
-            trustServerCertificate: true,
-            requestTimeout: 60000,
-          },
-          pool: {
-            max: 10,
-            min: 0,
-            idleTimeoutMillis: 30000,
-          },
-        })
-        .then((connectionPool) => {
-          this.dbConnectionMap.set('central', {
-            connected: true,
-            pool: connectionPool,
-          });
-        })
-        .catch((error) => {
-          console.error('Error connecting to Central database:', error);
-        });
-
-      const newConnection = this.dbConnectionMap.get('central');
-      return newConnection ? newConnection.pool : null;
-    }
+  async closeAll(): Promise<void> {
+    const pools = [...new Set([...this.dbConnectionMap.values()].map((value) => value.pool))];
+    this.dbConnectionMap.clear();
+    const results = await Promise.allSettled(pools.map((pool) => pool?.close()));
+    const failure = results.find((result) => result.status === 'rejected');
+    if (failure?.status === 'rejected') throw failure.reason;
   }
+
+
 }
 
 export const connection = new ConnectionService();
